@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 import bcrypt
 import pandas as pd
 import streamlit as st
-from supabase import create_client, Client
 
 
 # =========================================================
@@ -21,49 +20,14 @@ st.set_page_config(
 
 
 # =========================================================
-# SECRETS / CONFIG
+# LOCAL CONFIG / STORAGE
 # =========================================================
 
-SUPABASE_URL = st.secrets.get(
-    "SUPABASE_URL",
-    os.getenv("SUPABASE_URL", "")
-)
+DATA_FILE = "applications.json"
 
-SUPABASE_KEY = st.secrets.get(
-    "SUPABASE_KEY",
-    os.getenv("SUPABASE_KEY", "")
-)
-
-DISCORD_URL = st.secrets.get(
-    "DISCORD_URL",
-    os.getenv("DISCORD_URL", "https://discord.gg/EnRHX6qW")
-)
-
-ADMIN_USERNAME = st.secrets.get(
-    "ADMIN_USERNAME",
-    os.getenv("ADMIN_USERNAME", "admin")
-)
-
-ADMIN_PASSWORD_HASH = st.secrets.get(
-    "ADMIN_PASSWORD_HASH",
-    os.getenv("ADMIN_PASSWORD_HASH", "")
-)
-
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Database is not configured.")
-    st.info(
-        "Add SUPABASE_URL and SUPABASE_KEY to "
-        "Streamlit Cloud → Settings → Secrets."
-    )
-    st.stop()
-
-
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
-
+DISCORD_URL = st.secrets.get("DISCORD_URL", os.getenv("DISCORD_URL", "https://discord.gg/EnRHX6qW"))
+ADMIN_USERNAME = st.secrets.get("ADMIN_USERNAME", os.getenv("ADMIN_USERNAME", "foxadmin"))
+ADMIN_PASSWORD_HASH = st.secrets.get("ADMIN_PASSWORD_HASH", os.getenv("ADMIN_PASSWORD_HASH", ""))
 
 # =========================================================
 # WHITE / PROFESSIONAL THEME
@@ -278,44 +242,58 @@ st.markdown(
 
 
 # =========================================================
-# DATABASE FUNCTIONS
+# LOCAL JSON STORAGE FUNCTIONS
 # =========================================================
 
-def insert_application(data):
-    result = (
-        supabase
-        .table("applications")
-        .insert(data)
-        .execute()
-    )
+def _read_applications():
+    import json
+    if not os.path.exists(DATA_FILE):
+        return []
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
 
-    return result.data[0] if result.data else None
+
+def _write_applications(applications):
+    import json
+    temp_file = DATA_FILE + ".tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(applications, f, ensure_ascii=False, indent=2)
+    os.replace(temp_file, DATA_FILE)
+
+
+def insert_application(data):
+    applications = _read_applications()
+    next_id = max((int(x.get("id", 0)) for x in applications), default=0) + 1
+    data = dict(data)
+    data["id"] = next_id
+    applications.append(data)
+    _write_applications(applications)
+    return data
 
 
 def get_applications():
-    result = (
-        supabase
-        .table("applications")
-        .select("*")
-        .order("created_at", desc=True)
-        .execute()
-    )
-
-    return result.data or []
+    applications = _read_applications()
+    return sorted(applications, key=lambda x: str(x.get("created_at", "")), reverse=True)
 
 
 def update_application(app_id, values):
-    return (
-        supabase
-        .table("applications")
-        .update(values)
-        .eq("id", app_id)
-        .execute()
-    )
+    applications = _read_applications()
+    for app in applications:
+        if str(app.get("id")) == str(app_id):
+            app.update(values)
+            _write_applications(applications)
+            return True
+    return False
 
 
 def verify_password(password):
     try:
+        if not ADMIN_PASSWORD_HASH:
+            return False
         return bcrypt.checkpw(
             password.encode("utf-8"),
             ADMIN_PASSWORD_HASH.encode("utf-8")
@@ -325,21 +303,14 @@ def verify_password(password):
 
 
 def status_badge(status):
-
     classes = {
         "Pending": "status-pending",
         "Under Review": "status-review",
         "Approved": "status-approved",
         "Rejected": "status-rejected",
     }
-
     css = classes.get(status, "status-review")
-
-    return (
-        f'<span class="status {css}">'
-        f'{status}'
-        f'</span>'
-    )
+    return f'<span class="status {css}">{status}</span>'
 
 
 # =========================================================
@@ -738,7 +709,7 @@ if page == "📝 Staff Application":
             except Exception as e:
 
                 st.error(
-                    "Database error. Please try again."
+                    "Could not save your application. Please try again."
                 )
 
                 st.caption(str(e))
